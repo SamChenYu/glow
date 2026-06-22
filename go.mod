@@ -71,3 +71,5 @@ require (
 	golang.org/x/net v0.40.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 )
+
+replace github.com/muesli/gitcha => github.com/SamChenYu/gitcha v0.0.0-20260615153346-d97dd69564e7
