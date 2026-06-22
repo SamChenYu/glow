@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -20,11 +21,12 @@ import (
 )
 
 const (
-	stashIndent                = 1
-	stashViewItemHeight        = 3 // height of stash entry, including gap
-	stashViewTopPadding        = 5 // logo, status bar, gaps
-	stashViewBottomPadding     = 3 // pagination and gaps, but not help
-	stashViewHorizontalPadding = 6
+	stashIndent                    = 1
+	stashViewItemHeight            = 3 // height of stash entry, including gap
+	stashViewItemHeightExpanded    = 5 // title + date + 2 match preview lines + gap
+	stashViewTopPadding            = 5 // logo, status bar, gaps
+	stashViewBottomPadding         = 3 // pagination and gaps, but not help
+	stashViewHorizontalPadding     = 6
 )
 
 var stashingStatusMessage = statusMessage{normalStatusMessage, "Stashing..."}
@@ -220,6 +222,11 @@ func (m *stashModel) resetFiltering() {
 	m.filterInput.Reset()
 	m.filteredMarkdowns = nil
 
+	for _, md := range m.markdowns {
+		md.contentMatches = nil
+		md.totalMatchCount = 0
+	}
+
 	sortMarkdowns(m.markdowns)
 
 	// If the filtered section is present (it's always at the end) slice it out
@@ -252,6 +259,15 @@ func (m stashModel) shouldUpdateFilter() bool {
 
 // Update pagination according to the amount of markdowns for the current
 // state.
+func (m stashModel) hasContentMatches() bool {
+	for _, md := range m.getVisibleMarkdowns() {
+		if len(md.contentMatches) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *stashModel) updatePagination() {
 	_, helpHeight := m.helpView()
 
@@ -260,7 +276,11 @@ func (m *stashModel) updatePagination() {
 		helpHeight -
 		stashViewBottomPadding
 
-	m.paginator().PerPage = max(1, availableHeight/stashViewItemHeight)
+	itemHeight := stashViewItemHeight
+	if m.hasContentMatches() {
+		itemHeight = stashViewItemHeightExpanded
+	}
+	m.paginator().PerPage = max(1, availableHeight/itemHeight)
 
 	if pages := len(m.getVisibleMarkdowns()); pages < 1 {
 		m.paginator().SetTotalPages(1)
@@ -819,11 +839,19 @@ func (m stashModel) populatedView() string {
 	}
 
 	if len(mds) > 0 {
+		expanded := m.hasContentMatches()
 		start, end := m.paginator().GetSliceBounds(len(mds))
 		docs := mds[start:end]
 
 		for i, md := range docs {
 			stashItemView(&b, m, i, md)
+			if expanded && len(md.contentMatches) == 0 {
+				// Pad items without matches to match expanded height
+				extraLines := stashViewItemHeightExpanded - stashViewItemHeight
+				for j := 0; j < extraLines; j++ {
+					fmt.Fprint(&b, "\n")
+				}
+			}
 			if i != len(docs)-1 {
 				fmt.Fprintf(&b, "\n\n")
 			}
@@ -833,11 +861,15 @@ func (m stashModel) populatedView() string {
 	// If there aren't enough items to fill up this page (always the last page)
 	// then we need to add some newlines to fill up the space where stash items
 	// would have been.
+	fillerItemHeight := stashViewItemHeight
+	if m.hasContentMatches() {
+		fillerItemHeight = stashViewItemHeightExpanded
+	}
 	itemsOnPage := m.paginator().ItemsOnPage(len(mds))
 	if itemsOnPage < m.paginator().PerPage {
-		n := (m.paginator().PerPage - itemsOnPage) * stashViewItemHeight
+		n := (m.paginator().PerPage - itemsOnPage) * fillerItemHeight
 		if len(mds) == 0 {
-			n -= stashViewItemHeight - 1
+			n -= fillerItemHeight - 1
 		}
 		for i := 0; i < n; i++ {
 			fmt.Fprint(&b, "\n")
@@ -867,23 +899,71 @@ func loadLocalMarkdown(md *markdown) tea.Cmd {
 
 func filterMarkdowns(m stashModel) tea.Cmd {
 	return func() tea.Msg {
-		if m.filterInput.Value() == "" || !m.filterApplied() {
-			return filteredMarkdownMsg(m.markdowns) // return everything
-		}
-
-		targets := []string{}
+		query := m.filterInput.Value()
 		mds := m.markdowns
 
-		for _, t := range mds {
-			targets = append(targets, t.filterValue)
+		// Clear previous content matches
+		for _, md := range mds {
+			md.contentMatches = nil
+			md.totalMatchCount = 0
 		}
 
-		ranks := fuzzy.Find(m.filterInput.Value(), targets)
+		if query == "" || !m.filterApplied() {
+			return filteredMarkdownMsg(mds)
+		}
+
+		// Fuzzy match on titles
+		targets := make([]string, len(mds))
+		for i, t := range mds {
+			targets[i] = t.filterValue
+		}
+
+		ranks := fuzzy.Find(query, targets)
 		sort.Stable(ranks)
 
-		filtered := []*markdown{}
+		titleMatchSet := make(map[int]bool, len(ranks))
+		filtered := make([]*markdown, 0, len(ranks))
 		for _, r := range ranks {
 			filtered = append(filtered, mds[r.Index])
+			titleMatchSet[r.Index] = true
+		}
+
+		// Content search for queries of 3+ characters
+		if len(query) >= 3 {
+			re, err := regexp.Compile("(?i)" + regexp.QuoteMeta(query))
+			if err == nil {
+				for i, md := range mds {
+					if md.localPath == "" {
+						continue
+					}
+					data, err := os.ReadFile(md.localPath)
+					if err != nil {
+						continue
+					}
+					lines := strings.Split(string(data), "\n")
+					for _, line := range lines {
+						loc := re.FindStringIndex(line)
+						if loc == nil {
+							continue
+						}
+						md.totalMatchCount++
+						if len(md.contentMatches) < 2 {
+							trimmed := strings.TrimSpace(line)
+							tloc := re.FindStringIndex(trimmed)
+							if tloc != nil {
+								md.contentMatches = append(md.contentMatches, contentMatch{
+									lineText: trimmed,
+									colStart: tloc[0],
+									colEnd:   tloc[1],
+								})
+							}
+						}
+					}
+					if md.totalMatchCount > 0 && !titleMatchSet[i] {
+						filtered = append(filtered, md)
+					}
+				}
+			}
 		}
 
 		return filteredMarkdownMsg(filtered)

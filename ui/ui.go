@@ -216,6 +216,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc":
+			if m.state == stateShowDocument && m.pager.state == pagerStateSearching {
+				var cmd tea.Cmd
+				m.pager, cmd = m.pager.update(msg)
+				return m, cmd
+			}
 			if m.state == stateShowDocument || m.stash.viewState == stashStateLoadingDocument {
 				batch := m.unloadDocument()
 				return m, tea.Batch(batch...)

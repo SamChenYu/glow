@@ -13,6 +13,12 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+type contentMatch struct {
+	lineText string
+	colStart int
+	colEnd   int
+}
+
 type markdown struct {
 	// Full path of a local markdown file. Only relevant to local documents and
 	// those that have been stashed in this session.
@@ -23,9 +29,11 @@ type markdown struct {
 	// field is ephemeral, and should only be referenced during filtering.
 	filterValue string
 
-	Body    string
-	Note    string
-	Modtime time.Time
+	Body            string
+	Note            string
+	Modtime         time.Time
+	contentMatches  []contentMatch
+	totalMatchCount int
 }
 
 // Generate the value we're doing to filter against.

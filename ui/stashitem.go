@@ -87,6 +87,29 @@ func stashItemView(b *strings.Builder, m stashModel, index int, md *markdown) {
 	if hasEditedBy {
 		fmt.Fprintf(b, " %s", editedBy)
 	}
+	if len(md.contentMatches) > 0 {
+		matchCountStr := fmt.Sprintf("(%d matches)", md.totalMatchCount)
+		fmt.Fprintf(b, " %s", dimGreenFg(matchCountStr))
+		for _, cm := range md.contentMatches {
+			fmt.Fprintf(b, "\n%s   ", gutter)
+			displayLine := truncate.StringWithTail(cm.lineText, truncateTo-3, ellipsis)
+			renderHighlightedMatch(b, displayLine, m.filterInput.Value())
+		}
+	}
+}
+
+func renderHighlightedMatch(b *strings.Builder, line, query string) {
+	matchStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5050"))
+	lower := strings.ToLower(line)
+	lowerQuery := strings.ToLower(query)
+	idx := strings.Index(lower, lowerQuery)
+	if idx < 0 {
+		b.WriteString(dimNormalFg(line))
+		return
+	}
+	b.WriteString(dimNormalFg(line[:idx]))
+	b.WriteString(matchStyle.Render(line[idx : idx+len(query)]))
+	b.WriteString(dimNormalFg(line[idx+len(query):]))
 }
 
 func styleFilteredText(haystack, needles string, defaultStyle, matchedStyle lipgloss.Style) string {

@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/glow/v2/utils"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
+	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/fsnotify/fsnotify"
 	runewidth "github.com/mattn/go-runewidth"
 	"github.com/muesli/reflow/ansi"
@@ -87,7 +89,12 @@ type pagerState int
 const (
 	pagerStateBrowse pagerState = iota
 	pagerStateStatusMessage
+	pagerStateSearching
 )
+
+type searchMatch struct {
+	line int
+}
 
 type pagerModel struct {
 	common   *commonModel
@@ -103,6 +110,11 @@ type pagerModel struct {
 	currentDocument markdown
 
 	watcher *fsnotify.Watcher
+
+	searchInput     textinput.Model
+	contentLines    []string
+	searchMatches   []searchMatch
+	currentMatchIdx int
 }
 
 func newPagerModel(common *commonModel) pagerModel {
@@ -111,10 +123,24 @@ func newPagerModel(common *commonModel) pagerModel {
 	vp.YPosition = 0
 	vp.HighPerformanceRendering = config.HighPerformancePager
 
+	si := textinput.New()
+	si.Prompt = "Find: "
+	si.PromptStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#1C8760", Dark: "#89F0CB"}).
+		Background(statusBarBg)
+	si.TextStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"}).
+		Background(statusBarBg)
+	si.Cursor.Style = lipgloss.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"}).
+		Background(statusBarBg)
+
 	m := pagerModel{
-		common:   common,
-		state:    pagerStateBrowse,
-		viewport: vp,
+		common:          common,
+		state:           pagerStateBrowse,
+		viewport:        vp,
+		searchInput:     si,
+		currentMatchIdx: -1,
 	}
 	m.initWatcher()
 	return m
@@ -176,6 +202,89 @@ func (m *pagerModel) unload() {
 	m.viewport.SetContent("")
 	m.viewport.YOffset = 0
 	m.unwatchFile()
+	m.clearSearch()
+}
+
+var (
+	searchHighlightStyle = lipgloss.NewStyle().
+				Background(lipgloss.AdaptiveColor{Light: "#FFDD57", Dark: "#3D3500"})
+	searchCurrentHighlightStyle = lipgloss.NewStyle().
+					Background(lipgloss.AdaptiveColor{Light: "#FF9F1C", Dark: "#665200"})
+)
+
+func (m *pagerModel) clearSearch() {
+	m.searchInput.Reset()
+	m.searchInput.Blur()
+	m.searchMatches = nil
+	m.currentMatchIdx = -1
+	if len(m.contentLines) > 0 {
+		m.setContent(strings.Join(m.contentLines, "\n"))
+	}
+}
+
+func (m *pagerModel) executeSearch() {
+	query := strings.ToLower(m.searchInput.Value())
+	m.searchMatches = nil
+	m.currentMatchIdx = -1
+	if query == "" {
+		m.setContent(strings.Join(m.contentLines, "\n"))
+		return
+	}
+	for i, line := range m.contentLines {
+		plain := xansi.Strip(line)
+		if strings.Contains(strings.ToLower(plain), query) {
+			m.searchMatches = append(m.searchMatches, searchMatch{line: i})
+		}
+	}
+	m.applySearchHighlights()
+}
+
+func (m *pagerModel) applySearchHighlights() {
+	if len(m.contentLines) == 0 {
+		return
+	}
+
+	matchSet := make(map[int]bool, len(m.searchMatches))
+	currentLine := -1
+	for i, sm := range m.searchMatches {
+		matchSet[sm.line] = true
+		if i == m.currentMatchIdx {
+			currentLine = sm.line
+		}
+	}
+
+	highlighted := make([]string, len(m.contentLines))
+	for i, line := range m.contentLines {
+		if i == currentLine {
+			highlighted[i] = searchCurrentHighlightStyle.Render(line)
+		} else if matchSet[i] {
+			highlighted[i] = searchHighlightStyle.Render(line)
+		} else {
+			highlighted[i] = line
+		}
+	}
+	m.setContent(strings.Join(highlighted, "\n"))
+}
+
+func (m *pagerModel) jumpToNextMatch() {
+	if len(m.searchMatches) == 0 {
+		return
+	}
+	m.currentMatchIdx = (m.currentMatchIdx + 1) % len(m.searchMatches)
+	m.applySearchHighlights()
+	m.viewport.SetYOffset(m.searchMatches[m.currentMatchIdx].line)
+}
+
+func (m *pagerModel) jumpToPrevMatch() {
+	if len(m.searchMatches) == 0 {
+		return
+	}
+	m.currentMatchIdx--
+	if m.currentMatchIdx < 0 {
+		m.currentMatchIdx = len(m.searchMatches) - 1
+	}
+	m.applySearchHighlights()
+	m.viewport.SetYOffset(m.searchMatches[m.currentMatchIdx].line)
 }
 
 func (m pagerModel) update(msg tea.Msg) (pagerModel, tea.Cmd) {
@@ -186,12 +295,46 @@ func (m pagerModel) update(msg tea.Msg) (pagerModel, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.state == pagerStateSearching {
+			switch msg.String() {
+			case keyEsc:
+				m.clearSearch()
+				m.state = pagerStateBrowse
+				return m, nil
+			case "enter":
+				m.jumpToNextMatch()
+				if m.viewport.HighPerformanceRendering {
+					cmds = append(cmds, viewport.Sync(m.viewport))
+				}
+				return m, tea.Batch(cmds...)
+			case "shift+enter":
+				m.jumpToPrevMatch()
+				if m.viewport.HighPerformanceRendering {
+					cmds = append(cmds, viewport.Sync(m.viewport))
+				}
+				return m, tea.Batch(cmds...)
+			default:
+				prevValue := m.searchInput.Value()
+				m.searchInput, cmd = m.searchInput.Update(msg)
+				cmds = append(cmds, cmd)
+				if m.searchInput.Value() != prevValue {
+					m.executeSearch()
+				}
+				return m, tea.Batch(cmds...)
+			}
+		}
+
 		switch msg.String() {
 		case "q", keyEsc:
 			if m.state != pagerStateBrowse {
 				m.state = pagerStateBrowse
 				return m, nil
 			}
+		case "ctrl+f":
+			m.state = pagerStateSearching
+			m.searchInput.Focus()
+			return m, textinput.Blink
+
 		case "home", "g":
 			m.viewport.GotoTop()
 			if m.viewport.HighPerformanceRendering {
@@ -248,7 +391,9 @@ func (m pagerModel) update(msg tea.Msg) (pagerModel, tea.Cmd) {
 	case contentRenderedMsg:
 		log.Info("content rendered", "state", m.state)
 
-		m.setContent(string(msg))
+		rendered := string(msg)
+		m.setContent(rendered)
+		m.contentLines = strings.Split(rendered, "\n")
 		if m.viewport.HighPerformanceRendering {
 			cmds = append(cmds, viewport.Sync(m.viewport))
 		}
@@ -301,6 +446,7 @@ func (m pagerModel) statusBarView(b *strings.Builder) {
 	)
 
 	showStatusMessage := m.state == pagerStateStatusMessage
+	showSearch := m.state == pagerStateSearching
 
 	// Logo
 	logo := glowLogoView()
@@ -314,30 +460,57 @@ func (m pagerModel) statusBarView(b *strings.Builder) {
 		scrollPercent = statusBarScrollPosStyle(scrollPercent)
 	}
 
-	// "Help" note
+	// Match count (shown instead of help when searching)
 	var helpNote string
-	if showStatusMessage {
+	if showSearch {
+		var matchInfo string
+		if m.searchInput.Value() == "" {
+			matchInfo = ""
+		} else if len(m.searchMatches) == 0 {
+			matchInfo = " 0 results "
+		} else {
+			idx := m.currentMatchIdx + 1
+			if idx < 1 {
+				idx = 0
+			}
+			matchInfo = fmt.Sprintf(" %d/%d ", idx, len(m.searchMatches))
+		}
+		helpNote = statusBarHelpStyle(matchInfo)
+	} else if showStatusMessage {
 		helpNote = statusBarMessageHelpStyle(" ? Help ")
 	} else {
 		helpNote = statusBarHelpStyle(" ? Help ")
 	}
 
-	// Note
+	// Note / search input
 	var note string
-	if showStatusMessage {
+	if showSearch {
+		logo = ""
+		searchView := m.searchInput.View()
+		availWidth := max(0,
+			m.common.width-
+				ansi.PrintableRuneWidth(scrollPercent)-
+				ansi.PrintableRuneWidth(helpNote),
+		)
+		note = truncate.StringWithTail(searchView, uint(availWidth), ellipsis) //nolint:gosec
+	} else if showStatusMessage {
 		note = m.statusMessage
 	} else {
 		note = m.currentDocument.Note
 	}
-	note = truncate.StringWithTail(" "+note+" ", uint(max(0, //nolint:gosec
-		m.common.width-
-			ansi.PrintableRuneWidth(logo)-
-			ansi.PrintableRuneWidth(scrollPercent)-
-			ansi.PrintableRuneWidth(helpNote),
-	)), ellipsis)
+
+	if !showSearch {
+		note = truncate.StringWithTail(" "+note+" ", uint(max(0, //nolint:gosec
+			m.common.width-
+				ansi.PrintableRuneWidth(logo)-
+				ansi.PrintableRuneWidth(scrollPercent)-
+				ansi.PrintableRuneWidth(helpNote),
+		)), ellipsis)
+	}
+
 	if showStatusMessage {
 		note = statusBarMessageStyle(note)
-	} else {
+	} else if !showSearch {
 		note = statusBarNoteStyle(note)
 	}
 
@@ -372,6 +545,7 @@ func (m pagerModel) helpView() (s string) {
 		"c       copy contents",
 		"e       edit this document",
 		"r       reload this document",
+		"ctrl+f  find in document",
 		"esc     back to files",
 		"q       quit",
 	}
