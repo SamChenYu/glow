@@ -195,6 +195,7 @@ func (m model) Init() tea.Cmd {
 			log.Error("unable to read file", "file", m.common.cfg.Path, "error", err)
 			return func() tea.Msg { return errMsg{err} }
 		}
+		m.pager.currentDocument.Body = string(content)
 		body := string(utils.RemoveFrontmatter(content))
 		cmds = append(cmds, renderWithGlamour(m.pager, body))
 	}
@@ -216,7 +217,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc":
-			if m.state == stateShowDocument && m.pager.state == pagerStateSearching {
+			if m.state == stateShowDocument && (m.pager.state == pagerStateSearching || m.pager.state == pagerStateTOC) {
 				var cmd tea.Cmd
 				m.pager, cmd = m.pager.update(msg)
 				return m, cmd
@@ -238,6 +239,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "q":
+			if m.state == stateShowDocument && m.pager.state == pagerStateTOC {
+				var cmd tea.Cmd
+				m.pager, cmd = m.pager.update(msg)
+				return m, cmd
+			}
+
 			var cmd tea.Cmd
 
 			switch m.state { //nolint:exhaustive
@@ -252,7 +259,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "left", "h", "delete":
-			if m.state == stateShowDocument {
+			if m.state == stateShowDocument && m.pager.state != pagerStateTOC {
 				cmds = append(cmds, m.unloadDocument()...)
 				return m, tea.Batch(cmds...)
 			}

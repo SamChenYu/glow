@@ -90,6 +90,7 @@ const (
 	pagerStateBrowse pagerState = iota
 	pagerStateStatusMessage
 	pagerStateSearching
+	pagerStateTOC
 )
 
 type searchMatch struct {
@@ -115,6 +116,10 @@ type pagerModel struct {
 	contentLines    []string
 	searchMatches   []searchMatch
 	currentMatchIdx int
+
+	tocHeaders       []tocHeader
+	tocSelectedIdx   int
+	tocSavedYOffset  int
 }
 
 func newPagerModel(common *commonModel) pagerModel {
@@ -203,6 +208,7 @@ func (m *pagerModel) unload() {
 	m.viewport.YOffset = 0
 	m.unwatchFile()
 	m.clearSearch()
+	m.tocHeaders = nil
 }
 
 var (
@@ -295,6 +301,35 @@ func (m pagerModel) update(msg tea.Msg) (pagerModel, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.state == pagerStateTOC {
+			switch msg.String() {
+			case keyEsc, "q", "t":
+				m.exitTOC(false)
+			case "up", "k":
+				if m.tocSelectedIdx > 0 {
+					m.tocSelectedIdx--
+					m.updateTOCSelection()
+				}
+			case "down", "j":
+				if m.tocSelectedIdx < len(m.tocHeaders)-1 {
+					m.tocSelectedIdx++
+					m.updateTOCSelection()
+				}
+			case "home", "g":
+				m.tocSelectedIdx = 0
+				m.updateTOCSelection()
+			case "end", "G":
+				m.tocSelectedIdx = max(0, len(m.tocHeaders)-1)
+				m.updateTOCSelection()
+			case keyEnter:
+				m.exitTOC(true)
+			}
+			if m.viewport.HighPerformanceRendering {
+				cmds = append(cmds, viewport.Sync(m.viewport))
+			}
+			return m, tea.Batch(cmds...)
+		}
+
 		if m.state == pagerStateSearching {
 			switch msg.String() {
 			case keyEsc:
@@ -330,6 +365,19 @@ func (m pagerModel) update(msg tea.Msg) (pagerModel, tea.Cmd) {
 				m.state = pagerStateBrowse
 				return m, nil
 			}
+		case "t":
+			m.tocHeaders = parseHeaders(m.currentDocument.Body)
+			findHeaderLines(m.tocHeaders, m.contentLines)
+			if len(m.tocHeaders) == 0 {
+				cmds = append(cmds, m.showStatusMessage(pagerStatusMessage{"No headers found", false}))
+				return m, tea.Batch(cmds...)
+			}
+			m.enterTOC()
+			if m.viewport.HighPerformanceRendering {
+				cmds = append(cmds, viewport.Sync(m.viewport))
+			}
+			return m, tea.Batch(cmds...)
+
 		case "ctrl+f":
 			m.state = pagerStateSearching
 			m.searchInput.Focus()
@@ -447,6 +495,7 @@ func (m pagerModel) statusBarView(b *strings.Builder) {
 
 	showStatusMessage := m.state == pagerStateStatusMessage
 	showSearch := m.state == pagerStateSearching
+	showTOC := m.state == pagerStateTOC
 
 	// Logo
 	logo := glowLogoView()
@@ -462,7 +511,10 @@ func (m pagerModel) statusBarView(b *strings.Builder) {
 
 	// Match count (shown instead of help when searching)
 	var helpNote string
-	if showSearch {
+	if showTOC {
+		tocInfo := fmt.Sprintf(" %d/%d ", m.tocSelectedIdx+1, len(m.tocHeaders))
+		helpNote = statusBarHelpStyle(tocInfo)
+	} else if showSearch {
 		var matchInfo string
 		if m.searchInput.Value() == "" {
 			matchInfo = ""
@@ -484,7 +536,11 @@ func (m pagerModel) statusBarView(b *strings.Builder) {
 
 	// Note / search input
 	var note string
-	if showSearch {
+	if showTOC {
+		if m.tocSelectedIdx >= 0 && m.tocSelectedIdx < len(m.tocHeaders) {
+			note = "TOC: " + m.tocHeaders[m.tocSelectedIdx].title + "  ↑↓ navigate · enter confirm · esc back"
+		}
+	} else if showSearch {
 		logo = ""
 		searchView := m.searchInput.View()
 		availWidth := max(0,
@@ -546,20 +602,37 @@ func (m pagerModel) helpView() (s string) {
 		"e       edit this document",
 		"r       reload this document",
 		"ctrl+f  find in document",
+		"t       table of contents",
 		"esc     back to files",
 		"q       quit",
 	}
 
-	s += "\n"
-	s += "k/↑      up                  " + col1[0] + "\n"
-	s += "j/↓      down                " + col1[1] + "\n"
-	s += "b/pgup   page up             " + col1[2] + "\n"
-	s += "f/pgdn   page down           " + col1[3] + "\n"
-	s += "u        ½ page up           " + col1[4] + "\n"
-	s += "d        ½ page down         "
+	col2 := []string{
+		"k/↑      up                  ",
+		"j/↓      down                ",
+		"b/pgup   page up             ",
+		"f/pgdn   page down           ",
+		"u        ½ page up           ",
+		"d        ½ page down         ",
+	}
 
-	if len(col1) > 5 {
-		s += col1[5]
+	s += "\n"
+	rows := max(len(col1), len(col2))
+	for i := range rows {
+		left := ""
+		if i < len(col2) {
+			left = col2[i]
+		} else {
+			left = strings.Repeat(" ", 29)
+		}
+		right := ""
+		if i < len(col1) {
+			right = col1[i]
+		}
+		s += left + right
+		if i < rows-1 {
+			s += "\n"
+		}
 	}
 
 	s = indent(s, 2)
