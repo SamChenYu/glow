@@ -24,8 +24,12 @@ import (
 )
 
 const (
-	statusBarHeight = 1
-	lineNumberWidth = 4
+	statusBarHeight  = 1
+	lineNumberWidth  = 4
+	minimapWidth      = 2
+	minimapGutter     = 1
+	minimapMinVPWidth = 30
+	minimapAutoWidth  = 120
 )
 
 var (
@@ -120,6 +124,10 @@ type pagerModel struct {
 	tocHeaders       []tocHeader
 	tocSelectedIdx   int
 	tocSavedYOffset  int
+
+	showMinimap        bool
+	minimapUserToggled bool
+	minimapLines       []string
 }
 
 func newPagerModel(common *commonModel) pagerModel {
@@ -146,13 +154,22 @@ func newPagerModel(common *commonModel) pagerModel {
 		viewport:        vp,
 		searchInput:     si,
 		currentMatchIdx: -1,
+		showMinimap:     false,
 	}
 	m.initWatcher()
 	return m
 }
 
 func (m *pagerModel) setSize(w, h int) {
-	m.viewport.Width = w
+	if !m.minimapUserToggled {
+		m.showMinimap = m.common.cfg.ShowMinimap || w >= minimapAutoWidth
+	}
+	vpWidth := w
+	if m.showMinimap && w-minimapWidth-minimapGutter >= minimapMinVPWidth {
+		vpWidth = w - minimapWidth - minimapGutter
+	}
+	m.viewport.Width = vpWidth
+	m.viewport.HighPerformanceRendering = config.HighPerformancePager && !m.showMinimap
 	m.viewport.Height = h - statusBarHeight
 
 	if m.showHelp {
@@ -442,6 +459,7 @@ func (m pagerModel) update(msg tea.Msg) (pagerModel, tea.Cmd) {
 		rendered := string(msg)
 		m.setContent(rendered)
 		m.contentLines = strings.Split(rendered, "\n")
+		m.buildMinimapLines()
 		if m.viewport.HighPerformanceRendering {
 			cmds = append(cmds, viewport.Sync(m.viewport))
 		}
@@ -474,7 +492,23 @@ func (m pagerModel) update(msg tea.Msg) (pagerModel, tea.Cmd) {
 
 func (m pagerModel) View() string {
 	var b strings.Builder
-	fmt.Fprint(&b, m.viewport.View()+"\n")
+
+	viewportContent := m.viewport.View()
+	if m.minimapActive() {
+		vpLines := strings.Split(viewportContent, "\n")
+		mmLines := strings.Split(m.renderMinimap(), "\n")
+		for i := 0; i < len(vpLines); i++ {
+			pw := ansi.PrintableRuneWidth(vpLines[i])
+			pad := max(0, m.viewport.Width-pw)
+			mm := ""
+			if i < len(mmLines) {
+				mm = mmLines[i]
+			}
+			fmt.Fprint(&b, vpLines[i]+strings.Repeat(" ", pad)+mm+"\n")
+		}
+	} else {
+		fmt.Fprint(&b, viewportContent+"\n")
+	}
 
 	// Footer
 	m.statusBarView(&b)
@@ -484,6 +518,130 @@ func (m pagerModel) View() string {
 	}
 
 	return b.String()
+}
+
+func (m pagerModel) minimapActive() bool {
+	return m.showMinimap &&
+		m.state != pagerStateTOC &&
+		len(m.minimapLines) > 0 &&
+		m.common.width-minimapWidth-minimapGutter >= minimapMinVPWidth
+}
+
+func (m *pagerModel) buildMinimapLines() {
+	totalLines := len(m.contentLines)
+	if totalLines == 0 {
+		m.minimapLines = nil
+		return
+	}
+
+	maxW := float64(m.viewport.Width)
+	if maxW < 1 {
+		maxW = 1
+	}
+
+	result := make([]string, totalLines)
+	for i, line := range m.contentLines {
+		plain := xansi.Strip(line)
+		w := float64(ansi.PrintableRuneWidth(plain))
+		d := math.Min(1.0, w/maxW)
+
+		ch := minimapBlockChar(d)
+		color := minimapColor(d)
+		cell := lipgloss.NewStyle().Foreground(color).Render(string(ch))
+
+		var b strings.Builder
+		for col := 0; col < minimapWidth; col++ {
+			b.WriteString(cell)
+		}
+		result[i] = b.String()
+	}
+	m.minimapLines = result
+}
+
+func minimapBlockChar(density float64) rune {
+	switch {
+	case density > 0.6:
+		return '█'
+	case density > 0.35:
+		return '▓'
+	case density > 0.15:
+		return '▒'
+	case density > 0.02:
+		return '░'
+	default:
+		return ' '
+	}
+}
+
+func minimapColor(density float64) lipgloss.AdaptiveColor {
+	switch {
+	case density > 0.5:
+		return dullFuchsia
+	case density > 0.2:
+		return dimDullFuchsia
+	default:
+		return lipgloss.AdaptiveColor{Light: "#F0E0F3", Dark: "#3D2040"}
+	}
+}
+
+func (m pagerModel) renderMinimap() string {
+	vpHeight := m.viewport.Height
+	totalRows := len(m.minimapLines)
+	if totalRows == 0 || vpHeight == 0 {
+		return ""
+	}
+
+	gutterFg := dimDullFuchsia
+	normalFg := dullFuchsia
+	highlightFg := fuchsia
+	highlightBg := lipgloss.AdaptiveColor{Light: "#F6E0FA", Dark: "#3D2042"}
+
+	visTop := m.viewport.YOffset
+	visBot := m.viewport.YOffset + vpHeight
+	if visBot < visTop+1 {
+		visBot = visTop + 1
+	}
+
+	lines := make([]string, vpHeight)
+	for displayRow := 0; displayRow < vpHeight; displayRow++ {
+		var sourceRow int
+		if totalRows <= vpHeight {
+			sourceRow = displayRow
+		} else {
+			sourceRow = displayRow * totalRows / vpHeight
+		}
+
+		var rowContent string
+		if sourceRow < totalRows {
+			rowContent = m.minimapLines[sourceRow]
+		} else {
+			rowContent = strings.Repeat(" ", minimapWidth)
+		}
+
+		inVisible := false
+		if totalRows <= vpHeight {
+			inVisible = sourceRow >= visTop && sourceRow < visBot
+		} else {
+			scaledTop := visTop * vpHeight / totalRows
+			scaledBot := visBot * vpHeight / totalRows
+			if scaledBot <= scaledTop {
+				scaledBot = scaledTop + 1
+			}
+			inVisible = displayRow >= scaledTop && displayRow < scaledBot
+		}
+
+		plain := xansi.Strip(rowContent)
+		if inVisible {
+			rowContent = lipgloss.NewStyle().Foreground(highlightFg).Background(highlightBg).Render(plain)
+		} else {
+			rowContent = lipgloss.NewStyle().Foreground(normalFg).Render(plain)
+		}
+
+		gutter := lipgloss.NewStyle().Foreground(gutterFg).Render("│")
+		lines[displayRow] = gutter + rowContent
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func (m pagerModel) statusBarView(b *strings.Builder) {
@@ -570,11 +728,18 @@ func (m pagerModel) statusBarView(b *strings.Builder) {
 		note = statusBarNoteStyle(note)
 	}
 
+	// Minimap indicator
+	mmIndicator := ""
+	if m.minimapActive() {
+		mmIndicator = statusBarScrollPosStyle(" MAP ")
+	}
+
 	// Empty space
 	padding := max(0,
 		m.common.width-
 			ansi.PrintableRuneWidth(logo)-
 			ansi.PrintableRuneWidth(note)-
+			ansi.PrintableRuneWidth(mmIndicator)-
 			ansi.PrintableRuneWidth(scrollPercent)-
 			ansi.PrintableRuneWidth(helpNote),
 	)
@@ -585,10 +750,11 @@ func (m pagerModel) statusBarView(b *strings.Builder) {
 		emptySpace = statusBarNoteStyle(emptySpace)
 	}
 
-	fmt.Fprintf(b, "%s%s%s%s%s",
+	fmt.Fprintf(b, "%s%s%s%s%s%s",
 		logo,
 		note,
 		emptySpace,
+		mmIndicator,
 		scrollPercent,
 		helpNote,
 	)

@@ -44,6 +44,7 @@ var (
 	showLineNumbers  bool
 	preserveNewLines bool
 	mouse            bool
+	showMinimap      bool
 
 	rootCmd = &cobra.Command{
 		Use:   "glow [SOURCE|DIR]",
@@ -331,7 +332,7 @@ func executeCLI(cmd *cobra.Command, src *source, w io.Writer) error {
 			return fmt.Errorf("unable to run command: %w", err)
 		}
 		return nil
-	case tui || cmd.Flags().Changed("tui"):
+	case tui || cmd.Flags().Changed("tui") || showMinimap || (term.IsTerminal(int(os.Stdout.Fd())) && width >= 120):
 		path := ""
 		if !isURL(src.URL) {
 			path = src.URL
@@ -363,6 +364,7 @@ func runTUI(path string, content string) error {
 	cfg.GlamourMaxWidth = width
 	cfg.EnableMouse = mouse
 	cfg.PreserveNewLines = preserveNewLines
+	cfg.ShowMinimap = viper.GetBool("minimap")
 
 	// Run Bubble Tea program
 	if _, err := ui.NewProgram(cfg, content).Run(); err != nil {
@@ -408,6 +410,7 @@ func init() {
 	rootCmd.Flags().BoolVarP(&preserveNewLines, "preserve-new-lines", "n", false, "preserve newlines in the output")
 	rootCmd.Flags().BoolVarP(&mouse, "mouse", "m", false, "enable mouse wheel (TUI-mode only)")
 	_ = rootCmd.Flags().MarkHidden("mouse")
+	rootCmd.Flags().BoolVar(&showMinimap, "minimap", false, "show minimap (TUI-mode only)")
 
 	// Config bindings
 	_ = viper.BindPFlag("pager", rootCmd.Flags().Lookup("pager"))
@@ -419,6 +422,7 @@ func init() {
 	_ = viper.BindPFlag("preserveNewLines", rootCmd.Flags().Lookup("preserve-new-lines"))
 	_ = viper.BindPFlag("showLineNumbers", rootCmd.Flags().Lookup("line-numbers"))
 	_ = viper.BindPFlag("all", rootCmd.Flags().Lookup("all"))
+	_ = viper.BindPFlag("minimap", rootCmd.Flags().Lookup("minimap"))
 
 	viper.SetDefault("style", styles.AutoStyle)
 	viper.SetDefault("width", 0)
