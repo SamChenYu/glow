@@ -103,6 +103,10 @@ var latexCommands = map[string]string{
 	`\nearrow`:        "↗",
 	`\searrow`:        "↘",
 
+	// Text-mode symbols (use fullwidth $ so the inline math regex doesn't re-consume it as a delimiter)
+	`\textdollar`: "＄",
+	`\ast`:        "∗",
+
 	// Miscellaneous
 	`\infty`:    "∞",
 	`\partial`:  "∂",
