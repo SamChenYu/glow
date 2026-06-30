@@ -23,6 +23,8 @@ pager: false
 width: 80
 # show all files, including hidden and ignored.
 all: false
+# show minimap sidebar (TUI-mode only)
+minimap: true
 `
 
 var configCmd = &cobra.Command{

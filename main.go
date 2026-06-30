@@ -332,7 +332,7 @@ func executeCLI(cmd *cobra.Command, src *source, w io.Writer) error {
 			return fmt.Errorf("unable to run command: %w", err)
 		}
 		return nil
-	case tui || cmd.Flags().Changed("tui") || showMinimap || (term.IsTerminal(int(os.Stdout.Fd())) && width >= 120):
+	case tui || cmd.Flags().Changed("tui") || cmd.Flags().Changed("minimap") || (term.IsTerminal(int(os.Stdout.Fd())) && width >= 120):
 		path := ""
 		if !isURL(src.URL) {
 			path = src.URL
@@ -410,7 +410,7 @@ func init() {
 	rootCmd.Flags().BoolVarP(&preserveNewLines, "preserve-new-lines", "n", false, "preserve newlines in the output")
 	rootCmd.Flags().BoolVarP(&mouse, "mouse", "m", false, "enable mouse wheel (TUI-mode only)")
 	_ = rootCmd.Flags().MarkHidden("mouse")
-	rootCmd.Flags().BoolVar(&showMinimap, "minimap", false, "show minimap (TUI-mode only)")
+	rootCmd.Flags().BoolVar(&showMinimap, "minimap", true, "show minimap (TUI-mode only)")
 
 	// Config bindings
 	_ = viper.BindPFlag("pager", rootCmd.Flags().Lookup("pager"))
@@ -427,6 +427,7 @@ func init() {
 	viper.SetDefault("style", styles.AutoStyle)
 	viper.SetDefault("width", 0)
 	viper.SetDefault("all", true)
+	viper.SetDefault("minimap", true)
 
 	rootCmd.AddCommand(configCmd, manCmd)
 }

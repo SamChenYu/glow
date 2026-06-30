@@ -134,7 +134,7 @@ func newPagerModel(common *commonModel) pagerModel {
 	// Init viewport
 	vp := viewport.New(0, 0)
 	vp.YPosition = 0
-	vp.HighPerformanceRendering = config.HighPerformancePager
+	vp.HighPerformanceRendering = false
 
 	si := textinput.New()
 	si.Prompt = "Find: "
@@ -154,7 +154,7 @@ func newPagerModel(common *commonModel) pagerModel {
 		viewport:        vp,
 		searchInput:     si,
 		currentMatchIdx: -1,
-		showMinimap:     false,
+		showMinimap:     true,
 	}
 	m.initWatcher()
 	return m
@@ -445,6 +445,12 @@ func (m pagerModel) update(msg tea.Msg) (pagerModel, tea.Cmd) {
 		case "r":
 			return m, loadLocalMarkdown(&m.currentDocument)
 
+		case "m":
+			m.showMinimap = !m.showMinimap
+			m.minimapUserToggled = true
+			m.setSize(m.common.width, m.common.height)
+			return m, renderWithGlamour(m, m.currentDocument.Body)
+
 		case "?":
 			m.toggleHelp()
 			if m.viewport.HighPerformanceRendering {
@@ -497,14 +503,22 @@ func (m pagerModel) View() string {
 	if m.minimapActive() {
 		vpLines := strings.Split(viewportContent, "\n")
 		mmLines := strings.Split(m.renderMinimap(), "\n")
-		for i := 0; i < len(vpLines); i++ {
-			pw := ansi.PrintableRuneWidth(vpLines[i])
+		for i := 0; i < m.viewport.Height; i++ {
+			line := ""
+			if i < len(vpLines) {
+				line = vpLines[i]
+			}
+			pw := ansi.PrintableRuneWidth(line)
+			if pw > m.viewport.Width {
+				line = truncate.String(line, uint(m.viewport.Width)) //nolint:gosec
+				pw = m.viewport.Width
+			}
 			pad := max(0, m.viewport.Width-pw)
 			mm := ""
 			if i < len(mmLines) {
 				mm = mmLines[i]
 			}
-			fmt.Fprint(&b, vpLines[i]+strings.Repeat(" ", pad)+mm+"\n")
+			fmt.Fprint(&b, line+strings.Repeat(" ", pad)+mm+"\n")
 		}
 	} else {
 		fmt.Fprint(&b, viewportContent+"\n")
@@ -598,8 +612,25 @@ func (m pagerModel) renderMinimap() string {
 
 	visTop := m.viewport.YOffset
 	visBot := m.viewport.YOffset + vpHeight
+	if visBot > totalRows {
+		visBot = totalRows
+	}
 	if visBot < visTop+1 {
 		visBot = visTop + 1
+	}
+
+	highlightRows := vpHeight
+	if totalRows > vpHeight {
+		highlightRows = max(1, vpHeight*vpHeight/totalRows)
+	}
+	scaledTop := 0
+	if totalRows > vpHeight {
+		scaledTop = visTop * vpHeight / totalRows
+	}
+	scaledBot := scaledTop + highlightRows
+	if scaledBot > vpHeight {
+		scaledBot = vpHeight
+		scaledTop = vpHeight - highlightRows
 	}
 
 	lines := make([]string, vpHeight)
@@ -618,17 +649,7 @@ func (m pagerModel) renderMinimap() string {
 			rowContent = strings.Repeat(" ", minimapWidth)
 		}
 
-		inVisible := false
-		if totalRows <= vpHeight {
-			inVisible = sourceRow >= visTop && sourceRow < visBot
-		} else {
-			scaledTop := visTop * vpHeight / totalRows
-			scaledBot := visBot * vpHeight / totalRows
-			if scaledBot <= scaledTop {
-				scaledBot = scaledTop + 1
-			}
-			inVisible = displayRow >= scaledTop && displayRow < scaledBot
-		}
+		inVisible := displayRow >= scaledTop && displayRow < scaledBot
 
 		plain := xansi.Strip(rowContent)
 		if inVisible {
@@ -728,18 +749,11 @@ func (m pagerModel) statusBarView(b *strings.Builder) {
 		note = statusBarNoteStyle(note)
 	}
 
-	// Minimap indicator
-	mmIndicator := ""
-	if m.minimapActive() {
-		mmIndicator = statusBarScrollPosStyle(" MAP ")
-	}
-
 	// Empty space
 	padding := max(0,
 		m.common.width-
 			ansi.PrintableRuneWidth(logo)-
 			ansi.PrintableRuneWidth(note)-
-			ansi.PrintableRuneWidth(mmIndicator)-
 			ansi.PrintableRuneWidth(scrollPercent)-
 			ansi.PrintableRuneWidth(helpNote),
 	)
@@ -750,11 +764,10 @@ func (m pagerModel) statusBarView(b *strings.Builder) {
 		emptySpace = statusBarNoteStyle(emptySpace)
 	}
 
-	fmt.Fprintf(b, "%s%s%s%s%s%s",
+	fmt.Fprintf(b, "%s%s%s%s%s",
 		logo,
 		note,
 		emptySpace,
-		mmIndicator,
 		scrollPercent,
 		helpNote,
 	)
@@ -769,6 +782,7 @@ func (m pagerModel) helpView() (s string) {
 		"r       reload this document",
 		"ctrl+f  find in document",
 		"t       table of contents",
+		"m       toggle minimap",
 		"esc     back to files",
 		"q       quit",
 	}
