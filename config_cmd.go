@@ -25,6 +25,8 @@ width: 80
 all: false
 # show minimap sidebar (TUI-mode only)
 minimap: true
+# lines to scroll per step (TUI-mode only)
+scrollSpeed: 5
 `
 
 var configCmd = &cobra.Command{

@@ -135,6 +135,8 @@ func newPagerModel(common *commonModel) pagerModel {
 	vp := viewport.New(0, 0)
 	vp.YPosition = 0
 	vp.HighPerformanceRendering = false
+	vp.KeyMap.Up.SetEnabled(false)
+	vp.KeyMap.Down.SetEnabled(false)
 
 	si := textinput.New()
 	si.Prompt = "Find: "
@@ -411,17 +413,23 @@ func (m pagerModel) update(msg tea.Msg) (pagerModel, tea.Cmd) {
 				cmds = append(cmds, viewport.Sync(m.viewport))
 			}
 
+		case "down", "j":
+			lines := m.viewport.ScrollDown(m.common.cfg.ScrollSpeed)
+			if m.viewport.HighPerformanceRendering {
+				cmds = append(cmds, viewport.ViewDown(m.viewport, lines))
+			}
+
+		case "up", "k":
+			lines := m.viewport.ScrollUp(m.common.cfg.ScrollSpeed)
+			if m.viewport.HighPerformanceRendering {
+				cmds = append(cmds, viewport.ViewUp(m.viewport, lines))
+			}
+
 		case "d":
 			m.viewport.HalfViewDown()
-			if m.viewport.HighPerformanceRendering {
-				cmds = append(cmds, viewport.Sync(m.viewport))
-			}
 
 		case "u":
 			m.viewport.HalfViewUp()
-			if m.viewport.HighPerformanceRendering {
-				cmds = append(cmds, viewport.Sync(m.viewport))
-			}
 
 		case "e":
 			lineno := int(math.RoundToEven(float64(m.viewport.TotalLineCount()) * m.viewport.ScrollPercent()))
@@ -446,10 +454,15 @@ func (m pagerModel) update(msg tea.Msg) (pagerModel, tea.Cmd) {
 			return m, loadLocalMarkdown(&m.currentDocument)
 
 		case "m":
+			wasHighPerf := m.viewport.HighPerformanceRendering
 			m.showMinimap = !m.showMinimap
 			m.minimapUserToggled = true
 			m.setSize(m.common.width, m.common.height)
-			return m, renderWithGlamour(m, m.currentDocument.Body)
+			if wasHighPerf && !m.viewport.HighPerformanceRendering {
+				cmds = append(cmds, tea.ClearScrollArea) //nolint:staticcheck
+			}
+			cmds = append(cmds, renderWithGlamour(m, m.currentDocument.Body))
+			return m, tea.Batch(cmds...)
 
 		case "?":
 			m.toggleHelp()
@@ -787,9 +800,10 @@ func (m pagerModel) helpView() (s string) {
 		"q       quit",
 	}
 
+	scrollLabel := fmt.Sprintf("scroll (%d lines)     ", m.common.cfg.ScrollSpeed)
 	col2 := []string{
-		"k/↑      up                  ",
-		"j/↓      down                ",
+		"k/↑      " + scrollLabel,
+		"j/↓      " + scrollLabel,
 		"b/pgup   page up             ",
 		"f/pgdn   page down           ",
 		"u        ½ page up           ",

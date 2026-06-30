@@ -45,6 +45,7 @@ var (
 	preserveNewLines bool
 	mouse            bool
 	showMinimap      bool
+	scrollSpeed      int
 
 	rootCmd = &cobra.Command{
 		Use:   "glow [SOURCE|DIR]",
@@ -365,6 +366,10 @@ func runTUI(path string, content string) error {
 	cfg.EnableMouse = mouse
 	cfg.PreserveNewLines = preserveNewLines
 	cfg.ShowMinimap = viper.GetBool("minimap")
+	cfg.ScrollSpeed = viper.GetInt("scrollSpeed")
+	if cfg.ScrollSpeed < 1 {
+		cfg.ScrollSpeed = 1
+	}
 
 	// Run Bubble Tea program
 	if _, err := ui.NewProgram(cfg, content).Run(); err != nil {
@@ -411,6 +416,7 @@ func init() {
 	rootCmd.Flags().BoolVarP(&mouse, "mouse", "m", false, "enable mouse wheel (TUI-mode only)")
 	_ = rootCmd.Flags().MarkHidden("mouse")
 	rootCmd.Flags().BoolVar(&showMinimap, "minimap", true, "show minimap (TUI-mode only)")
+	rootCmd.Flags().IntVar(&scrollSpeed, "scroll-speed", 5, "lines to scroll per step (TUI-mode only)")
 
 	// Config bindings
 	_ = viper.BindPFlag("pager", rootCmd.Flags().Lookup("pager"))
@@ -423,11 +429,13 @@ func init() {
 	_ = viper.BindPFlag("showLineNumbers", rootCmd.Flags().Lookup("line-numbers"))
 	_ = viper.BindPFlag("all", rootCmd.Flags().Lookup("all"))
 	_ = viper.BindPFlag("minimap", rootCmd.Flags().Lookup("minimap"))
+	_ = viper.BindPFlag("scrollSpeed", rootCmd.Flags().Lookup("scroll-speed"))
 
 	viper.SetDefault("style", styles.AutoStyle)
 	viper.SetDefault("width", 0)
 	viper.SetDefault("all", true)
 	viper.SetDefault("minimap", true)
+	viper.SetDefault("scrollSpeed", 5)
 
 	rootCmd.AddCommand(configCmd, manCmd)
 }

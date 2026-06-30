@@ -16,6 +16,8 @@ type Config struct {
 
 	ShowMinimap bool
 
+	ScrollSpeed int
+
 	// For debugging the UI
 	HighPerformancePager bool `env:"GLOW_HIGH_PERFORMANCE_PAGER" envDefault:"true"`
 	GlamourEnabled       bool `env:"GLOW_ENABLE_GLAMOUR"         envDefault:"true"`
