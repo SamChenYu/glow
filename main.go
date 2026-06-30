@@ -437,6 +437,7 @@ func init() {
 	viper.SetDefault("minimap", true)
 	viper.SetDefault("scrollSpeed", 5)
 
+	configCmd.Flags().BoolVarP(&settingsFlag, "settings", "i", false, "open interactive settings")
 	rootCmd.AddCommand(configCmd, manCmd)
 }
 
