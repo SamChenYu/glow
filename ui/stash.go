@@ -350,6 +350,18 @@ func (m *stashModel) hideStatusMessage() {
 	}
 }
 
+// setStatusMessage displays an ephemeral status note in the file listing.
+// The returned command should be sent back through the update function.
+func (m *stashModel) setStatusMessage(msg statusMessage) tea.Cmd {
+	m.showStatusMessage = true
+	m.statusMessage = msg
+	if m.statusMessageTimer != nil {
+		m.statusMessageTimer.Stop()
+	}
+	m.statusMessageTimer = time.NewTimer(statusMessageTimeout)
+	return waitForStatusMessageTimeout(stashContext, m.statusMessageTimer)
+}
+
 func (m *stashModel) moveCursorUp() {
 	m.setCursor(m.cursor() - 1)
 	if m.cursor() < 0 && m.paginator().Page == 0 {

@@ -37,10 +37,6 @@ var configCmd = &cobra.Command{
 	Example: paragraph("glow config\nglow config --config path/to/config.yml"),
 	Args:    cobra.NoArgs,
 	RunE: func(*cobra.Command, []string) error {
-		if settingsFlag {
-			return runSettingsForm()
-		}
-
 		if err := ensureConfigFile(); err != nil {
 			return err
 		}

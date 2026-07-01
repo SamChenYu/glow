@@ -18,6 +18,20 @@ type Config struct {
 
 	ScrollSpeed int
 
+	// Pager mirrors the CLI "pager" config so the in-app settings editor can
+	// show and persist its current value. Not otherwise used by the TUI.
+	Pager bool
+
+	// ConfiguredWidth is the width value as stored in the config file. It is
+	// kept separate from GlamourMaxWidth (which is overridden with the terminal
+	// width at runtime) so the settings editor shows and persists the
+	// configured value rather than the current terminal width.
+	ConfiguredWidth uint
+
+	// ConfigPath is the absolute path of the YAML config file the in-app
+	// settings editor writes to. Empty disables in-app saving.
+	ConfigPath string
+
 	// For debugging the UI
 	HighPerformancePager bool `env:"GLOW_HIGH_PERFORMANCE_PAGER" envDefault:"true"`
 	GlamourEnabled       bool `env:"GLOW_ENABLE_GLAMOUR"         envDefault:"true"`

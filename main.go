@@ -370,6 +370,17 @@ func runTUI(path string, content string) error {
 	if cfg.ScrollSpeed < 1 {
 		cfg.ScrollSpeed = 1
 	}
+	cfg.Pager = pager
+	// The configured width, before validateOptions overrode `width` with the
+	// terminal width. The settings editor persists this, not the terminal size.
+	cfg.ConfiguredWidth = viper.GetUint("width")
+
+	// Resolve the config file path so the in-app settings editor can persist
+	// changes. A failure here is non-fatal; it just disables saving.
+	if err := ensureConfigFile(); err != nil {
+		log.Warn("could not resolve config file for in-app settings", "error", err)
+	}
+	cfg.ConfigPath = configFile
 
 	// Run Bubble Tea program
 	if _, err := ui.NewProgram(cfg, content).Run(); err != nil {
@@ -437,7 +448,6 @@ func init() {
 	viper.SetDefault("minimap", true)
 	viper.SetDefault("scrollSpeed", 5)
 
-	configCmd.Flags().BoolVarP(&settingsFlag, "settings", "i", false, "open interactive settings")
 	rootCmd.AddCommand(configCmd, manCmd)
 }
 

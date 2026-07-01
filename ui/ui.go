@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,12 +81,14 @@ type state int
 const (
 	stateShowStash state = iota
 	stateShowDocument
+	stateShowSettings
 )
 
 func (s state) String() string {
 	return map[state]string{
 		stateShowStash:    "showing file listing",
 		stateShowDocument: "showing document",
+		stateShowSettings: "showing settings",
 	}[s]
 }
 
@@ -103,8 +106,9 @@ type model struct {
 	fatalErr error
 
 	// Sub-models
-	stash stashModel
-	pager pagerModel
+	stash    stashModel
+	pager    pagerModel
+	settings settingsModel
 
 	// Channel that receives paths to local markdown files
 	// (via the github.com/muesli/gitcha package)
@@ -129,16 +133,76 @@ func (m *model) unloadDocument() []tea.Cmd {
 	return batch
 }
 
+// resolveGlamourStyle turns the "auto" style into a concrete dark or light
+// style based on the terminal background. Any other style is returned as-is.
+func resolveGlamourStyle(s string) string {
+	if s == styles.AutoStyle {
+		if te.HasDarkBackground() {
+			return styles.DarkStyle
+		}
+		return styles.LightStyle
+	}
+	return s
+}
+
+// applySettings persists the values from the settings form and applies them to
+// the running session where feasible. It returns any commands that need to run
+// (a status message, plus a live mouse-mode toggle if that changed).
+func (m *model) applySettings() tea.Cmd {
+	v := m.settings.vals
+	width, _ := strconv.Atoi(v.widthStr)
+	scroll, _ := strconv.Atoi(v.scrollStr)
+	if scroll < 1 {
+		scroll = 1
+	}
+
+	if err := writeSettings(m.common.cfg.ConfigPath, v.style, v.mouse, v.pager, width, v.all, v.minimap, scroll); err != nil {
+		log.Error("could not save settings", "error", err)
+		return m.stash.setStatusMessage(statusMessage{errorStatusMessage, "Couldn't save settings"})
+	}
+
+	mouseChanged := config.EnableMouse != v.mouse
+
+	// Update the raw, as-configured snapshot so a subsequent open of the
+	// settings form (and code that reads the package-level config) sees the
+	// new values.
+	config.GlamourStyle = v.style
+	config.ConfiguredWidth = uint(width) //nolint:gosec
+	config.ScrollSpeed = scroll
+	config.EnableMouse = v.mouse
+	config.Pager = v.pager
+	config.ShowAllFiles = v.all
+	config.ShowMinimap = v.minimap
+
+	// Update the live config. Style is resolved so the next opened document
+	// renders with the new theme. Width is intentionally not applied live: at
+	// runtime common.cfg.GlamourMaxWidth tracks the terminal width.
+	m.common.cfg.GlamourStyle = resolveGlamourStyle(v.style)
+	m.common.cfg.ScrollSpeed = scroll
+	m.common.cfg.EnableMouse = v.mouse
+	m.common.cfg.Pager = v.pager
+	m.common.cfg.ShowAllFiles = v.all
+	m.common.cfg.ShowMinimap = v.minimap
+
+	cmds := []tea.Cmd{m.stash.setStatusMessage(statusMessage{normalStatusMessage, "Settings saved"})}
+
+	// Mouse mode is set once as a program option at startup, so toggle it live
+	// via a command when it changed.
+	if mouseChanged {
+		if v.mouse {
+			cmds = append(cmds, tea.EnableMouseCellMotion)
+		} else {
+			cmds = append(cmds, tea.DisableMouse)
+		}
+	}
+
+	return tea.Batch(cmds...)
+}
+
 func newModel(cfg Config, content string) tea.Model {
 	initSections()
 
-	if cfg.GlamourStyle == styles.AutoStyle {
-		if te.HasDarkBackground() {
-			cfg.GlamourStyle = styles.DarkStyle
-		} else {
-			cfg.GlamourStyle = styles.LightStyle
-		}
-	}
+	cfg.GlamourStyle = resolveGlamourStyle(cfg.GlamourStyle)
 
 	common := commonModel{
 		cfg: cfg,
@@ -230,6 +294,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.Init()
 			}
 
+		case "s":
+			// Open the settings editor from the file listing only. The
+			// filterState guard keeps "s" a literal character while the user
+			// is typing in the filter input.
+			if m.state == stateShowStash &&
+				m.stash.filterState != filtering &&
+				m.stash.viewState == stashStateReady {
+				m.settings = newSettingsModel(m.common)
+				m.state = stateShowSettings
+				return m, m.settings.Init()
+			}
+
 		case "q":
 			if m.state == stateShowDocument && m.pager.state == pagerStateTOC {
 				var cmd tea.Cmd
@@ -246,6 +322,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.stash, cmd = m.stash.update(msg)
 					return m, cmd
 				}
+			case stateShowSettings:
+				// Let the settings form handle "q"; don't quit the app while
+				// the settings editor is open.
+				m.settings, cmd = m.settings.update(msg)
+				return m, cmd
 			}
 
 			return m, tea.Quit
@@ -271,6 +352,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.common.cfg.GlamourMaxWidth = uint(msg.Width) //nolint:gosec
 		m.stash.setSize(msg.Width, msg.Height)
 		m.pager.setSize(msg.Width, msg.Height)
+		if m.state == stateShowSettings {
+			m.settings.setSize(msg.Width, msg.Height)
+		}
 
 	case initLocalFileSearchMsg:
 		m.localFileFinder = msg.ch
@@ -324,6 +408,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		newPagerModel, cmd := m.pager.update(msg)
 		m.pager = newPagerModel
 		cmds = append(cmds, cmd)
+
+	case stateShowSettings:
+		var cmd tea.Cmd
+		m.settings, cmd = m.settings.update(msg)
+		cmds = append(cmds, cmd)
+
+		// The form finished this update: return to the file listing in the
+		// same pass, because huh renders an empty view once it's quitting.
+		switch {
+		case m.settings.completed():
+			m.state = stateShowStash
+			cmds = append(cmds, m.applySettings())
+		case m.settings.aborted():
+			m.state = stateShowStash
+		}
 	}
 
 	return m, tea.Batch(cmds...)
@@ -337,6 +436,8 @@ func (m model) View() string {
 	switch m.state { //nolint:exhaustive
 	case stateShowDocument:
 		return m.pager.View()
+	case stateShowSettings:
+		return m.settings.view()
 	default:
 		return m.stash.view()
 	}
