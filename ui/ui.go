@@ -82,6 +82,7 @@ const (
 	stateShowStash state = iota
 	stateShowDocument
 	stateShowSettings
+	stateShowEditor
 )
 
 func (s state) String() string {
@@ -89,6 +90,7 @@ func (s state) String() string {
 		stateShowStash:    "showing file listing",
 		stateShowDocument: "showing document",
 		stateShowSettings: "showing settings",
+		stateShowEditor:   "showing editor",
 	}[s]
 }
 
@@ -109,6 +111,7 @@ type model struct {
 	stash    stashModel
 	pager    pagerModel
 	settings settingsModel
+	editor   editorModel
 
 	// Channel that receives paths to local markdown files
 	// (via the github.com/muesli/gitcha package)
@@ -306,6 +309,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.settings.Init()
 			}
 
+		case "e":
+			// Open the in-app split editor. From the file listing we must read
+			// the file first (stash items have no loaded body); from a document
+			// the body is already loaded. Any other state (incl. the editor
+			// itself) falls through so "e" is typed normally.
+			switch m.state {
+			case stateShowStash:
+				if m.stash.filterState == filtering || m.stash.viewState != stashStateReady {
+					break
+				}
+				md := m.stash.selectedMarkdown()
+				if md == nil {
+					break
+				}
+				data, err := os.ReadFile(md.localPath)
+				if err != nil {
+					return m, m.stash.setStatusMessage(statusMessage{errorStatusMessage, "Couldn't open file"})
+				}
+				m.editor = newEditorModel(m.common, md.localPath, string(data), md.Note, stateShowStash)
+				m.state = stateShowEditor
+				return m, m.editor.Init()
+			case stateShowDocument:
+				doc := m.pager.currentDocument
+				if doc.localPath == "" {
+					break
+				}
+				m.editor = newEditorModel(m.common, doc.localPath, doc.Body, doc.Note, stateShowDocument)
+				m.state = stateShowEditor
+				return m, m.editor.Init()
+			}
+
 		case "q":
 			if m.state == stateShowDocument && m.pager.state == pagerStateTOC {
 				var cmd tea.Cmd
@@ -326,6 +360,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Let the settings form handle "q"; don't quit the app while
 				// the settings editor is open.
 				m.settings, cmd = m.settings.update(msg)
+				return m, cmd
+			case stateShowEditor:
+				// "q" is a normal character in the editor; don't quit the app.
+				m.editor, cmd = m.editor.update(msg)
 				return m, cmd
 			}
 
@@ -355,6 +393,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state == stateShowSettings {
 			m.settings.setSize(msg.Width, msg.Height)
 		}
+		if m.state == stateShowEditor {
+			m.editor.setSize(msg.Width, msg.Height)
+		}
 
 	case initLocalFileSearchMsg:
 		m.localFileFinder = msg.ch
@@ -368,7 +409,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, renderWithGlamour(m.pager, body))
 
 	case contentRenderedMsg:
-		m.state = stateShowDocument
+		// Don't eject the editor if a stray render completes while it's open.
+		if m.state != stateShowEditor {
+			m.state = stateShowDocument
+		}
+
+	case editorSavedMsg:
+		// Keep the pager's copy in sync so returning to the document shows the
+		// saved content.
+		if m.state == stateShowEditor && m.editor.origin == stateShowDocument {
+			m.pager.currentDocument.Body = msg.body
+		}
+
+	case editorQuitMsg:
+		if m.state == stateShowEditor {
+			origin := m.editor.origin
+			m.state = origin
+			if origin == stateShowDocument {
+				// Reload from disk so the document reflects any saved edits,
+				// reusing the existing fetchedMarkdownMsg -> render pipeline.
+				cmds = append(cmds, loadLocalMarkdown(&m.pager.currentDocument))
+			}
+		}
 
 	case localFileSearchFinished:
 		// Always pass these messages to the stash so we can keep it updated
@@ -423,6 +485,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case m.settings.aborted():
 			m.state = stateShowStash
 		}
+
+	case stateShowEditor:
+		var cmd tea.Cmd
+		m.editor, cmd = m.editor.update(msg)
+		cmds = append(cmds, cmd)
 	}
 
 	return m, tea.Batch(cmds...)
@@ -438,6 +505,8 @@ func (m model) View() string {
 		return m.pager.View()
 	case stateShowSettings:
 		return m.settings.view()
+	case stateShowEditor:
+		return m.editor.view()
 	default:
 		return m.stash.view()
 	}

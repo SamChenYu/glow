@@ -431,7 +431,9 @@ func (m pagerModel) update(msg tea.Msg) (pagerModel, tea.Cmd) {
 		case "u":
 			m.viewport.HalfViewUp()
 
-		case "e":
+		// Edit in external $EDITOR ("e" opens the in-app split editor, handled
+		// at the top level).
+		case "E":
 			lineno := int(math.RoundToEven(float64(m.viewport.TotalLineCount()) * m.viewport.ScrollPercent()))
 			if m.viewport.AtTop() {
 				lineno = 0
@@ -791,7 +793,8 @@ func (m pagerModel) helpView() (s string) {
 		"g/home  go to top",
 		"G/end   go to bottom",
 		"c       copy contents",
-		"e       edit this document",
+		"e       edit (live preview)",
+		"E       edit in $EDITOR",
 		"r       reload this document",
 		"ctrl+f  find in document",
 		"t       table of contents",
@@ -859,26 +862,34 @@ func renderWithGlamour(m pagerModel, md string) tea.Cmd {
 	}
 }
 
-// This is where the magic happens.
+// glamourRender renders the given markdown using the pager's current document
+// and viewport. It's a thin adapter over renderMarkdown.
 func glamourRender(m pagerModel, markdown string) (string, error) {
-	trunc := lipgloss.NewStyle().MaxWidth(m.viewport.Width - lineNumberWidth).Render
+	return renderMarkdown(m.common.cfg, m.currentDocument.Note, m.viewport.Width, markdown)
+}
 
-	if !config.GlamourEnabled {
+// renderMarkdown renders markdown to styled, word-wrapped, terminal output.
+// This is where the magic happens. It's shared by the pager and the in-app
+// editor's live preview so both render identically.
+func renderMarkdown(cfg Config, note string, width int, markdown string) (string, error) {
+	trunc := lipgloss.NewStyle().MaxWidth(width - lineNumberWidth).Render
+
+	if !cfg.GlamourEnabled {
 		return markdown, nil
 	}
 
-	isCode := !utils.IsMarkdownFile(m.currentDocument.Note)
-	width := max(0, min(int(m.common.cfg.GlamourMaxWidth), m.viewport.Width)) //nolint:gosec
+	isCode := !utils.IsMarkdownFile(note)
+	renderWidth := max(0, min(int(cfg.GlamourMaxWidth), width)) //nolint:gosec
 	if isCode {
-		width = 0
+		renderWidth = 0
 	}
 
 	options := []glamour.TermRendererOption{
-		utils.GlamourStyle(m.common.cfg.GlamourStyle, isCode),
-		glamour.WithWordWrap(width),
+		utils.GlamourStyle(cfg.GlamourStyle, isCode),
+		glamour.WithWordWrap(renderWidth),
 	}
 
-	if m.common.cfg.PreserveNewLines {
+	if cfg.PreserveNewLines {
 		options = append(options, glamour.WithPreservedNewLines())
 	}
 	r, err := glamour.NewTermRenderer(options...)
@@ -887,7 +898,7 @@ func glamourRender(m pagerModel, markdown string) (string, error) {
 	}
 
 	if isCode {
-		markdown = utils.WrapCodeBlock(markdown, filepath.Ext(m.currentDocument.Note))
+		markdown = utils.WrapCodeBlock(markdown, filepath.Ext(note))
 	} else {
 		markdown = utils.ProcessMermaidDiagrams(markdown)
 		markdown = utils.ProcessMathNotation(markdown)
@@ -907,7 +918,7 @@ func glamourRender(m pagerModel, markdown string) (string, error) {
 
 	var content strings.Builder
 	for i, s := range lines {
-		if isCode || m.common.cfg.ShowLineNumbers {
+		if isCode || cfg.ShowLineNumbers {
 			content.WriteString(lineNumberStyle(fmt.Sprintf("%"+fmt.Sprint(lineNumberWidth)+"d", i+1)))
 			content.WriteString(trunc(s))
 		} else {

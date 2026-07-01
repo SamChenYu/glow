@@ -12,6 +12,7 @@ import (
 type tocHeader struct {
 	level        int
 	title        string
+	srcLine      int // 0-based line in the frontmatter-stripped source
 	renderedLine int
 }
 
@@ -21,7 +22,7 @@ func parseHeaders(body string) []tocHeader {
 	var headers []tocHeader
 	inCodeBlock := false
 
-	for _, line := range lines {
+	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
@@ -50,6 +51,7 @@ func parseHeaders(body string) []tocHeader {
 				headers = append(headers, tocHeader{
 					level:        level,
 					title:        title,
+					srcLine:      i,
 					renderedLine: -1,
 				})
 			}

@@ -547,8 +547,9 @@ func (m *stashModel) handleDocumentBrowsing(msg tea.Msg) tea.Cmd {
 			m.loaded = false
 			return findLocalFiles(*m.common)
 
-		// Edit document in EDITOR
-		case "e":
+		// Edit document in external $EDITOR (the in-app split editor is on "e",
+		// handled at the top level).
+		case "E":
 			md := m.selectedMarkdown()
 
 			// In case no file is available
