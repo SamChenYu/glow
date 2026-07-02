@@ -307,6 +307,7 @@ func executeCLI(cmd *cobra.Command, src *source, w io.Writer) error {
 	} else {
 		content = utils.ProcessMermaidDiagrams(content)
 		content = utils.ProcessMathNotation(content)
+		content = utils.NormalizeTableGlyphs(content)
 	}
 
 	out, err := r.Render(content)

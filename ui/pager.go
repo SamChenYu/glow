@@ -902,6 +902,7 @@ func renderMarkdown(cfg Config, note string, width int, markdown string) (string
 	} else {
 		markdown = utils.ProcessMermaidDiagrams(markdown)
 		markdown = utils.ProcessMathNotation(markdown)
+		markdown = utils.NormalizeTableGlyphs(markdown)
 	}
 
 	out, err := r.Render(markdown)
